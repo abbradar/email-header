@@ -43,7 +43,7 @@ module Network.Email.Header.Read
 import           Control.Applicative
 import           Control.Monad.Catch
 import           Data.Attoparsec.Combinator
-import           Data.Attoparsec.Lazy
+import           Data.Attoparsec.Text.Lazy
 import qualified Data.ByteString             as B
 import           Data.CaseInsensitive        (CI)
 import qualified Data.Text.Lazy              as L

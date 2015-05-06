@@ -33,17 +33,16 @@ module Network.Email.Header.Parser
 
 import           Control.Applicative
 import           Control.Monad
-import           Data.Attoparsec              (Parser)
-import qualified Data.Attoparsec              as A
-import qualified Data.Attoparsec.Char8        as A8
+import           Data.Attoparsec.Text         (Parser)
+import qualified Data.Attoparsec.Text         as A
+import           Data.Char
 import           Data.Attoparsec.Combinator
 import           Data.Bits
 import qualified Data.ByteString              as B
 import qualified Data.ByteString.Base64       as Base64
-import           Data.ByteString.Internal     (w2c)
-import           Data.ByteString.Lazy.Builder
-import qualified Data.ByteString.Char8        as B8
-import qualified Data.ByteString.Lazy         as L (toStrict)
+import qualified Data.ByteString.Lazy         as BL
+import qualified Data.ByteString.Lazy.Builder as BL
+import           Data.Text.Lazy.Builder
 import           Data.CaseInsensitive         (CI)
 import qualified Data.CaseInsensitive         as CI
 import           Data.List
@@ -54,7 +53,7 @@ import           Data.Time
 import           Data.Time.Calendar.WeekDate
 import qualified Data.Text                    as T
 import           Data.Text.Encoding
-import qualified Data.Text.Lazy               as L (Text, fromChunks)
+import qualified Data.Text.Lazy               as L
 import           Data.Word
 
 import           Network.Email.Charset
@@ -79,19 +78,19 @@ parseEither :: Monad m => Either String a -> m a
 parseEither = either fail return
 
 -- | Run a 'Builder' as a strict 'B.ByteString'.
-toByteString :: Builder -> B.ByteString
-toByteString = L.toStrict . toLazyByteString
+toText :: Builder -> T.Text
+toText = L.toStrict . toLazyText
 
 -- | Skip folding whitespace.
 fws :: Parser ()
-fws = A8.skipSpace
+fws = A.skipSpace
 
 -- | Parse a comment, including all nested comments.
-comment :: Parser B.ByteString
-comment = A8.char '(' *> A.scan (0 :: Int, False) f <* A8.char ')'
+comment :: Parser T.Text
+comment = A.char '(' *> A.scan (0 :: Int, False) f <* A.char ')'
   where
     f (!n, True ) _ = Just (n, False)
-    f (!n, False) w = case w2c w of
+    f (!n, False) w = case w of
         '('  -> Just (n + 1, False)
         ')'  -> if n == 0 then Nothing else Just (n - 1, False)
         '\\' -> Just (n, True)
@@ -107,21 +106,21 @@ lexeme p = p <* cfws
 
 -- | Parse a character followed by whitespace.
 symbol :: Char -> Parser Char
-symbol = lexeme . A8.char
+symbol = lexeme . A.char
 
 -- | Quickly (and unsafely) convert a digit to the number it represents.
-fromDigit :: Integral a => Word8 -> a
-fromDigit w = fromIntegral (w - 48)
+fromDigit :: Integral a => Char -> a
+fromDigit w = fromIntegral (fromEnum w - 48)
 
 -- | Parse a fixed number of digits.
 digits :: Integral a => Int -> Parser a
 digits 0 = return 0
-digits 1 = fromDigit <$> A.satisfy A8.isDigit_w8
+digits 1 = fromDigit <$> A.digit
 digits n = do
     s <- A.take n
-    unless (B.all A8.isDigit_w8 s) $
+    unless (T.all isDigit s) $
         fail $ "expected " ++ show n ++ " digits"
-    return $ B.foldl' (\a w -> 10*a + fromDigit w) 0 s
+    return $ T.foldl' (\a w -> 10*a + fromDigit w) 0 s
 
 -- | Parse a number lexeme with a fixed number of digits.
 number :: Integral a => Int -> Parser a
@@ -132,83 +131,84 @@ hexPair :: Parser Word8
 hexPair = decode <$> hexDigit <*> hexDigit
   where
     decode a b      = shiftL a 4 .|. b
-    hexDigit        = fromHexDigit <$> A.satisfy isHexDigit
-    isHexDigit w    = w >= 48 && w <= 57
-                   || w >= 64 && w <= 70
-                   || w >= 97 && w <= 102
+    hexDigit        = fromIntegral <$> fromHexDigit <$> A.satisfy (A.inClass "\48-\57\64-\70\97-\102")
     fromHexDigit w
-        | w >= 97   = w - 87
-        | w >= 64   = w - 55
-        | otherwise = w - 48
+        | w >= 'a'   = fromEnum w - fromEnum 'a' + 10
+        | w >= 'A'   = fromEnum w - fromEnum 'A' + 10
+        | otherwise = fromEnum w - fromEnum '0'
 
 -- | Parse an token lexeme consisting of all printable characters, but
 --  disallowing the specified special characters.
-tokenWith :: String -> Parser B.ByteString
+tokenWith :: String -> Parser T.Text
 tokenWith specials = lexeme (A.takeWhile1 isAtom)
   where
-    isAtom w = w <= 126 && w >= 33 && A.notInClass specials w
+    isAtom w = not (isAscii w) || (w <= '\126' && w >= '\33' && A.notInClass specials w)
 
 -- | Parse an atom, which contains ASCII letters, digits, and the
 -- characters @"!#$%&\'*+-/=?^_`{|}~"@.
-atom :: Parser B.ByteString
+atom :: Parser T.Text
 atom = tokenWith "()<>[]:;@\\\",."
 
 -- | Parse a dot-atom, or an atom which may contain periods.
-dotAtom :: Parser B.ByteString
+dotAtom :: Parser T.Text
 dotAtom = tokenWith "()<>[]:;@\\\","
 
 -- | A MIME token, which contains ASCII letters, digits, and the
 -- characters @"!#$%\'*+-^_`{|}~."@.
-token :: Parser B.ByteString
+token :: Parser T.Text
 token = tokenWith "()<>@,;:\\\"/[]?="
 
 -- | A case-insensitive MIME token.
-tokenCI :: Parser (CI B.ByteString)
+tokenCI :: Parser (CI T.Text)
 tokenCI = CI.mk <$> token
 
+-- | A case-insensitive MIME token, ByteString version.
+tokenCIbs :: Parser (CI B.ByteString)
+tokenCIbs = CI.mk <$> encodeUtf8 <$> token
+
 -- | Parse a quoted-string.
-quotedString :: Parser B.ByteString
+quotedString :: Parser T.Text
 quotedString = lexeme $
-    toByteString <$ A8.char '"' <*> concatMany quotedChar <* A8.char '"'
+    toText <$ A.char '"' <*> concatMany quotedChar <* A.char '"'
   where
     quotedChar = mempty <$ A.string "\r\n" 
-             <|> word8 <$ A8.char '\\' <*> A.anyWord8
-             <|> char8 <$> A8.satisfy (/= '"')
+             <|> singleton <$ A.char '\\' <*> A.anyChar
+             <|> singleton <$> A.satisfy (/= '"')
 
 -- | Parse an encoded word, as per RFC 2047.
 encodedWord :: Parser T.Text
 encodedWord = do
     _      <- A.string "=?"
-    name   <- B8.unpack <$> tokenWith "()<>@,;:\"/[]?.="
-    _      <- A8.char '?'
+    name   <- T.unpack <$> tokenWith "()<>@,;:\"/[]?.="
+    _      <- A.char '?'
     method <- decodeMethod
-    _      <- A8.char '?'
+    _      <- A.char '?'
     enc    <- method
     _      <- A.string "?="
 
     charset <- parseMaybe "charset not found" $ lookupCharset name
     return $ toUnicode charset enc
   where
-    decodeMethod = quoted       <$ A.satisfy (`B.elem` "Qq")
-               <|> base64String <$ A.satisfy (`B.elem` "Bb")
+    decodeMethod = quoted       <$ A.satisfy (A.inClass "Qq")
+               <|> base64String <$ A.satisfy (A.inClass "Bb")
 
-    quoted       = toByteString <$> concatMany quotedChar
+    quoted       = BL.toStrict <$> BL.toLazyByteString <$> concatMany quotedChar
 
-    quotedChar   = char8 ' ' <$ A8.char '_'
-               <|> word8 <$ A8.char '=' <*> hexPair
-               <|> char8 <$> A8.satisfy (not . isBreak)
+    quotedChar   = BL.byteString <$> encodeUtf8 <$> T.map underscore <$> A.takeWhile1 (A.notInClass "= ?")
+                   <|> BL.word8 <$ A.char '=' <*> hexPair
 
-    isBreak c    = A8.isSpace c || c == '?'
+    underscore '_' = ' '
+    underscore a = a
 
     base64String = do
-        s <- A8.takeWhile (/= '?')
+        s <- encodeUtf8 <$> A.takeWhile (/= '?')
         parseEither (Base64.decode s)
 
 -- | Return a quoted string as-is.
 scanString :: Char -> Char -> Parser Builder
 scanString start end = lexeme $ do
-    s <- byteString <$ A8.char start <*> A8.scan False f <* A8.char end
-    return (char8 start <> s <> char8 end)
+    s <- fromText <$ A.char start <*> A.scan False f <* A.char end
+    return (singleton start <> s <> singleton end)
   where
     f True  _       = Just False
     f False c
@@ -217,14 +217,14 @@ scanString start end = lexeme $ do
         | otherwise = Just False
 
 -- | Parse an email address, stripping out whitespace and comments.
-addrSpec :: Parser B.ByteString
-addrSpec = toByteString <$> (localPart <+> at <+> domain)
+addrSpec :: Parser T.Text
+addrSpec = toText <$> (localPart <+> at <+> domain)
   where
-    at            = char8 <$> symbol '@'
-    dot           = char8 <$> symbol '.'
+    at            = singleton <$> symbol '@'
+    dot           = singleton <$> symbol '.'
     dotSep p      = p <+> concatMany (dot <+> p)
 
-    addrAtom      = byteString <$> atom
+    addrAtom      = fromText <$> atom
     addrQuote     = scanString '"' '"'
     domainLiteral = scanString '[' ']'
 
@@ -232,7 +232,7 @@ addrSpec = toByteString <$> (localPart <+> at <+> domain)
     domain        = dotSep addrAtom <|> domainLiteral
 
 -- | Parse an address specification in angle brackets.
-angleAddrSpec :: Parser B.ByteString
+angleAddrSpec :: Parser T.Text
 angleAddrSpec = symbol '<' *> addrSpec <* symbol '>'
 
 -- | Parse two or more occurences of @p@, separated by @sep@.
@@ -268,7 +268,7 @@ dateTime = do
     zonedTime = ZonedTime <$> localTime <*> timeZone
 
     date      = do
-        d <- lexeme A8.decimal
+        d <- lexeme A.decimal
         m <- month
         y <- year
         parseMaybe "invalid date" $ fromGregorianValid y m d
@@ -290,7 +290,7 @@ dateTime = do
     timeZone  = minutesToTimeZone <$> timeZoneOffset
             <|> return utc
 
-    timeZoneOffset = lexeme . A8.signed $ do
+    timeZoneOffset = lexeme . A.signed $ do
         hh <- digits 2
         mm <- digits 2
         if mm >= 60
@@ -349,8 +349,8 @@ phrase :: Parser L.Text
 phrase = fromElements <$> many1 element
   where
     element = T.concat     <$> many1 (lexeme encodedWord)
-          <|> decodeLatin1 <$> quotedString
-          <|> decodeLatin1 <$> dotAtom
+          <|> quotedString
+          <|> dotAtom
 
 -- | Parse a comma-separated list of phrases.
 phraseList :: Parser [L.Text]
@@ -363,9 +363,9 @@ unstructured :: Parser L.Text
 unstructured = fromElements <$ fws <*> many element <* A.endOfInput
   where
     element = T.concat     <$> many1 (encodedWord <* fws)
-          <|> decodeLatin1 <$> word <* fws
+          <|> word <* fws
 
-    word    = A.takeWhile1 (not . A8.isSpace_w8)
+    word    = A.takeWhile1 (not . (== ' '))
 
 -- | Parse the MIME version (which should be 1.0).
 mimeVersion :: Parser (Int, Int)
@@ -375,10 +375,10 @@ mimeVersion = (,) <$> number 1 <* symbol '.' <*> number 1
 contentType :: Parser (MimeType, Parameters)
 contentType = (,) <$> mimeType <*> parameters
   where
-    mimeType   = MimeType <$> tokenCI <* symbol '/' <*> tokenCI
+    mimeType   = MimeType <$> tokenCIbs <* symbol '/' <*> tokenCIbs
     parameters = Map.fromList <$> many (symbol ';' *> parameter)
     parameter  = (,) <$> tokenCI <* symbol '=' <*> (token <|> quotedString)
 
 -- | Parse the content transfer encoding.
 contentTransferEncoding :: Parser (CI B.ByteString)
-contentTransferEncoding = tokenCI
+contentTransferEncoding = tokenCIbs

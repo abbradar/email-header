@@ -44,8 +44,8 @@ module Network.Email.Header.Render
     , contentID
     ) where
 
-import qualified Data.ByteString              as B
-import qualified Data.ByteString.Lazy.Builder as B
+import qualified Data.ByteString              as BS
+import qualified Data.Text.Lazy.Builder       as B
 import           Data.CaseInsensitive         (CI)
 import qualified Data.CaseInsensitive         as CI
 import           Data.Monoid
@@ -62,9 +62,9 @@ renderHeaders r = map (renderHeader r)
 
 -- | Render a header.
 renderHeader :: RenderOptions -> (HeaderName, Doc) -> Header
-renderHeader r (k, b) = (k, B.toLazyByteString l)
+renderHeader r (k, b) = (k, B.toLazyText l)
   where
-    l = render r (B.length (CI.original k) + 2) b
+    l = render r (BS.length (CI.original k) + 2) b
 
 -- | Build a header field.
 buildField :: HeaderName -> (a -> Doc) -> a -> (HeaderName, Doc)
@@ -159,7 +159,7 @@ contentType :: MimeType -> Parameters -> (HeaderName, Doc)
 contentType t params = ("Content-Type", P.contentType t params)
 
 -- | Create a @Content-Transfer-Encoding:@ field.
-contentTransferEncoding :: CI B.ByteString -> (HeaderName, Doc)
+contentTransferEncoding :: CI BS.ByteString -> (HeaderName, Doc)
 contentTransferEncoding =
     buildField "Content-Transfer-Encoding" P.contentTransferEncoding
 

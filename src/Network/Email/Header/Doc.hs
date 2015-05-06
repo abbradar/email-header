@@ -15,6 +15,7 @@ module Network.Email.Header.Doc
     , string
     , byteString
     , text
+    , lazyText
       -- * Spacing
     , space
     , newline
@@ -28,15 +29,15 @@ module Network.Email.Header.Doc
     , punctuate
     ) where
 
-import qualified Data.ByteString              as B
-import           Data.ByteString.Lazy.Builder (Builder)
-import qualified Data.ByteString.Lazy.Builder as B
-import qualified Data.ByteString.Lazy         as LB
+import qualified Data.ByteString              as BS
+import           Data.Text.Lazy.Builder       (Builder)
+import qualified Data.Text.Lazy.Builder       as B
 import           Data.List                    (intersperse)
 import           Data.Monoid
 import           Data.String
+import qualified Data.Text                    as T
+import qualified Data.Text.Encoding           as T
 import qualified Data.Text.Lazy               as L
-import qualified Data.Text.Lazy.Encoding      as L
 
 import           Network.Email.Charset
 import           Network.Email.Header.Layout  (Layout)
@@ -54,6 +55,8 @@ data RenderOptions = RenderOptions
     , charset   :: Charset
       -- | The header encoding used for encoded words.
     , encoding  :: Encoding
+      -- | Use UTF8 headers extension (RFC 6532).
+    , utf8mime :: Bool
     } deriving (Eq, Show)
 
 -- | The encoding used for binary characters in an encoded word.
@@ -73,6 +76,7 @@ defaultRenderOptions = RenderOptions
     , indent    = 2
     , charset   = defaultCharset
     , encoding  = QP
+    , utf8mime  = False
     }
 
 -- | A formatted email header.
@@ -125,25 +129,29 @@ builder k s = prim $ \_ _ -> F.span k s
 
 -- | Construct a 'Doc' from a 'String'.
 string :: String -> Doc
-string s = builder (length s) (B.string8 s)
+string s = builder (length s) (B.fromString s)
 
 -- | Construct a 'Doc' from a 'B.ByteString'.
-byteString :: B.ByteString -> Doc
-byteString s = builder (B.length s) (B.byteString s)
+byteString :: BS.ByteString -> Doc
+byteString = text . T.decodeLatin1
 
 -- | Construct a 'Builder' from a 'L.Text'.
-text :: L.Text -> Doc
-text = byteString . LB.toStrict . L.encodeUtf8
+text :: T.Text -> Doc
+text s =  builder (T.length s) (B.fromText s)
+
+-- | Construct a 'Builder' from a 'L.Text'.
+lazyText :: L.Text -> Doc
+lazyText = text . L.toStrict
 
 -- | A space layout.
 space :: Layout Builder
-space = F.span 1 (B.char8 ' ')
+space = F.span 1 (B.singleton ' ')
 
 -- | A newline layout. This will emit a @CRLF@ pair, break to a new line,
 -- and indent.
 newline :: RenderOptions -> Layout Builder
 newline r =
-    F.span 2 (B.byteString "\r\n") <>
+    F.span 2 (B.fromText "\r\n") <>
     F.break 0 <>
     mconcat (replicate1 (indent r) space)
   where

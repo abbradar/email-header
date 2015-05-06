@@ -21,6 +21,7 @@ import qualified Data.ByteString      as B
 import qualified Data.ByteString.Lazy as L
 import           Data.CaseInsensitive (CI)
 import           Data.Map.Strict      (Map)
+import qualified Data.Text            as T
 import qualified Data.Text.Lazy       as L
 import           Data.Typeable
 
@@ -28,13 +29,13 @@ import           Data.Typeable
 type HeaderName = CI B.ByteString
 
 -- | An email header.
-type Header = (HeaderName, L.ByteString)
+type Header = (HeaderName, L.Text)
 
 -- | A set of email headers, in order.
 type Headers = [Header]
 
 -- | An email address.
-newtype Address = Address B.ByteString
+newtype Address = Address T.Text
     deriving (Eq, Ord, Show)
 
 -- | A 'Mailbox' receives mail.
@@ -52,7 +53,7 @@ data Recipient
     deriving (Eq, Show)
 
 -- | A message identifier, which has a similar format to an email address.
-newtype MessageID = MessageID B.ByteString
+newtype MessageID = MessageID T.Text
     deriving (Eq, Ord, Show)
 
 -- | A MIME type.
@@ -62,7 +63,7 @@ data MimeType = MimeType
     } deriving (Eq, Ord, Show)
 
 -- | MIME content type parameters.
-type Parameters = Map (CI B.ByteString) B.ByteString
+type Parameters = Map (CI T.Text) T.Text
 
 -- | Email header exceptions.
 data HeaderException

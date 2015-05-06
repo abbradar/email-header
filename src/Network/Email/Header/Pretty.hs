@@ -25,10 +25,13 @@ module Network.Email.Header.Pretty
     ) where
 
 import           Control.Arrow
-import qualified Data.ByteString              as B
+import qualified Data.ByteString              as BS
 import qualified Data.ByteString.Base64       as Base64
-import           Data.ByteString.Lazy.Builder (Builder)
-import qualified Data.ByteString.Lazy.Builder as B
+import           Data.ByteString.Internal     (w2c)
+import qualified Data.Text                    as T
+import qualified Data.Text.Encoding           as E
+import           Data.Text.Lazy.Builder       (Builder)
+import qualified Data.Text.Lazy.Builder       as B
 import           Data.CaseInsensitive         (CI)
 import qualified Data.CaseInsensitive         as CI
 import           Data.Char
@@ -52,8 +55,12 @@ commaSep f = sep . punctuate "," . map f
 angle :: Doc -> Doc
 angle d = "<" <> d <> ">"
 
--- | Render a case-insensitive 'B.ByteString'.
-byteStringCI :: CI B.ByteString -> Doc
+-- | Render a case-insensitive 'T.Text'.
+textCI :: CI T.Text -> Doc
+textCI = text . CI.original
+
+-- | Render a case-insensitive 'T.Text'.
+byteStringCI :: CI BS.ByteString -> Doc
 byteStringCI = byteString . CI.original
 
 -- | Format a date and time.
@@ -95,7 +102,7 @@ dateTime (ZonedTime local zone) = localTime local </> timeZone zone
 
 -- | Format an address.
 address :: Address -> Doc
-address (Address s) = byteString s
+address (Address s) = text s
 
 -- | Format an address with angle brackets.
 angleAddr :: Address -> Doc
@@ -122,7 +129,7 @@ recipientList = commaSep recipient
 
 -- | Format a message identifier
 messageID :: MessageID -> Doc
-messageID (MessageID s) = angle (byteString s)
+messageID (MessageID s) = angle (text s)
 
 -- | Format a list of message identifiers.
 messageIDList :: [MessageID] -> Doc
@@ -134,30 +141,43 @@ hex w = toHexDigit a <> toHexDigit b
   where
     (a, b)          = w `divMod` 16
     toHexDigit n
-        | n < 10    = B.word8 (n + 48)
-        | otherwise = B.word8 (n + 55)
+        | n < 10    = B.singleton $ w2c (n + 48)
+        | otherwise = B.singleton $ w2c (n + 55)
 
 -- | Encode a word.
 encodeWord :: RenderOptions -> L.Text -> (Int, Builder)
-encodeWord r = encodeWith (encoding r) . fromUnicode (charset r) . L.toStrict
+encodeWord r = encodeWith (encoding r) . L.toStrict
   where
-    encodeWith QP     = encodeQ
-    encodeWith Base64 = encodeBase64
+    useUtf8           = utf8mime r
+                     && (charsetName (charset r) == "UTF-8")
+
+    encodeWith QP     = if useUtf8
+                        then encodeQUtf8
+                        else encodeQ . fromUnicode (charset r)
+    encodeWith Base64 = encodeBase64 . fromUnicode (charset r)
 
     encodeQ           = first getSum .
-                        B.foldr (\w a -> encodeWord8 w <> a) mempty
+                        BS.foldr (\w a -> encodeWord8 w <> a) mempty
 
+    encodeQUtf8       = first getSum .
+                        T.foldr (\w a -> encodeChar w <> a) mempty
     encodeWord8 w
-        | w == 32     = (Sum 1, B.char8 '_')
-        | isIllegal w = (Sum 3, B.char8 '=' <> hex w)
-        | otherwise   = (Sum 1, B.word8 w)
+        | w == 32      = (Sum 1, B.singleton '_')
+        | isIllegal w = (Sum 3, B.singleton '=' <> hex w)
+        | otherwise   = (Sum 1, B.singleton $ w2c w)
+    
+    encodeChar c
+        | c == ' ' = (Sum 1, B.singleton '_')
+        | isAscii c && isIllegal (fromIntegral $ fromEnum c) =
+              BS.foldr (\w a -> (Sum 3, B.singleton '=' <> hex w) <> a) mempty $ E.encodeUtf8 $ T.singleton c
+        | otherwise   = (Sum 1, B.singleton c)
 
     isIllegal w       = w < 33
                      || w > 126
-                     || w `B.elem` "()<>[]:;@\\\",?=_"
+                     || w `BS.elem` "()<>[]:;@\\\",?=_"
 
     encodeBase64 b    = let e = Base64.encode b
-                        in  (B.length e, B.byteString e)
+                        in (BS.length e, B.fromText $ E.decodeUtf8 e)
 
 -- | Split nonempty text into a layout that fits the given width and the
 -- remainder.
@@ -190,13 +210,13 @@ layoutText r h t0
         Base64 -> 'B'
 
     prefix  = F.span (5 + length name) $
-        B.byteString "=?" <>
-        B.string8 name <>
-        B.char8 '?' <>
-        B.char8 method <>
-        B.char8 '?'
+        B.fromText "=?" <>
+        B.fromString name <>
+        B.singleton '?' <>
+        B.singleton method <>
+        B.singleton '?'
 
-    postfix = F.span 2 (B.byteString "?=")
+    postfix = F.span 2 (B.fromText "?=")
 
     padding = 7 + length name
 
@@ -213,7 +233,7 @@ encodeText t = prim $ \r h -> layoutText r h t
 renderText :: (Char -> Bool) -> L.Text -> Doc
 renderText isIllegalChar t
     | mustEncode = encodeText t
-    | otherwise  = sep (map text ws)
+    | otherwise  = sep (map lazyText ws)
   where
     ws         = L.words t
 
@@ -259,8 +279,8 @@ contentType (MimeType t s) params = sep . punctuate ";" $
     renderMimeType : map renderParam (Map.toList params)
   where
     renderMimeType     = byteStringCI t <> "/" <> byteStringCI s
-    renderParam (k, v) = byteStringCI k <> "=" <> byteString v
+    renderParam (k, v) = textCI k <> "=" <> text v
 
 -- | Format the content transfer encoding.
-contentTransferEncoding :: CI B.ByteString -> Doc
+contentTransferEncoding :: CI BS.ByteString -> Doc
 contentTransferEncoding = byteStringCI
