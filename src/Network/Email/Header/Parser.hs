@@ -29,6 +29,10 @@ module Network.Email.Header.Parser
     , mimeVersion
     , contentType
     , contentTransferEncoding
+      -- * Headers
+    , headerName
+    , header
+    , headers
     ) where
 
 import           Control.Applicative
@@ -398,3 +402,19 @@ contentType = (,) <$> mimeType <*> parameters
 -- | Parse the content transfer encoding.
 contentTransferEncoding :: Parser (CI BS.ByteString)
 contentTransferEncoding = tokenAsciiCI
+
+-- | Parse the ASCII header name.
+headerName :: Parser HeaderName
+headerName = CI.mk <$> encodeUtf8 <$> A.takeWhile1 (isPrintable ":")
+
+-- | Parse one header field, without parsing insides.
+header :: Parser Header
+header = (,) <$> headerName <* A.char ':' <* cfws <*> (L.fromChunks <$> body)
+  where body = do
+          str <- A.takeWhile (/= '\r')
+          [str] <$ A.string "\r\n"
+            <|> (str:) <$> ((:) <$> (T.singleton <$> A.anyChar) <*> body)
+
+-- | Split multiple headers.
+headers :: Parser Headers
+headers = many1 header
