@@ -10,6 +10,7 @@ import qualified Data.ByteString.Char8       as B
 import           Data.CaseInsensitive        (CI)
 import qualified Data.CaseInsensitive        as CI
 import qualified Data.Map                    as Map
+import qualified Data.Text                   as T
 import qualified Data.Text.Lazy              as L
 import           Data.Time.Calendar
 import           Data.Time.LocalTime
@@ -53,16 +54,25 @@ text = L.pack <$> listOf char
 phrase :: Gen L.Text
 phrase = L.pack <$> listOf1 char
 
-token :: Gen B.ByteString
-token = resize 20 $ B.pack <$> listOf1 (elements ttext)  -- TODO
-  where
-    ttext = ['a'..'z'] ++ ['A'..'Z'] ++ ['0'..'9'] ++ "!#$%&'*+-^_`{|}~"
+tokenChars :: String
+tokenChars = ['a'..'z'] ++ ['A'..'Z'] ++ ['0'..'9'] ++ "!#$%&'*+-^_`{|}~"
 
-tokenCI :: Gen (CI B.ByteString)
+token :: Gen T.Text
+token = resize 20 $ T.pack <$> listOf1 (elements ttext)  -- TODO
+  where
+    ttext = tokenChars ++ ['а'..'я']
+
+tokenAscii :: Gen B.ByteString
+tokenAscii = resize 20 $ B.pack <$> listOf1 (elements tokenChars)  -- TODO
+
+tokenCI :: Gen (CI T.Text)
 tokenCI = CI.mk <$> token
 
-addrSpec :: Gen B.ByteString
-addrSpec = B.concat <$> sequence [token, pure "@", token]  -- TODO
+tokenAsciiCI :: Gen (CI B.ByteString)
+tokenAsciiCI = CI.mk <$> tokenAscii
+
+addrSpec :: Gen T.Text
+addrSpec = T.concat <$> sequence [token, pure "@", token]  -- TODO
 
 mimeVersion :: Gen (Int, Int)
 mimeVersion = (,) <$> digit <*> digit
@@ -93,12 +103,13 @@ instance Arbitrary MessageID where
     arbitrary = MessageID <$> addrSpec
 
 instance Arbitrary MimeType where
-    arbitrary = MimeType <$> tokenCI <*> tokenCI
+    arbitrary = MimeType <$> tokenAsciiCI <*> tokenAsciiCI
 
 instance Arbitrary R.RenderOptions where
     arbitrary = R.RenderOptions
         <$> choose (20, 80)
         <*> choose (1, 8)
+        <*> arbitrary
         <*> arbitrary
         <*> arbitrary
 
