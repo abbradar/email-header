@@ -48,7 +48,6 @@ import qualified Data.ByteString              as BS
 import qualified Data.Text.Lazy.Builder       as B
 import           Data.CaseInsensitive         (CI)
 import qualified Data.CaseInsensitive         as CI
-import           Data.Monoid
 import qualified Data.Text.Lazy               as L
 import           Data.Time.LocalTime
 

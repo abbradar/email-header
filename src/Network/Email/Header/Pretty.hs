@@ -37,7 +37,7 @@ import qualified Data.CaseInsensitive         as CI
 import           Data.Char
 import qualified Data.Map                     as Map
 import           Data.Monoid
-import           Data.Time
+import           Data.Time                    hiding (months)
 import           Data.Time.Calendar.WeekDate
 import qualified Data.Text.Lazy               as L
 import           Data.Word
