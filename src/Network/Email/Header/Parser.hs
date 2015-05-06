@@ -38,7 +38,7 @@ import qualified Data.Attoparsec.Text         as A
 import           Data.Char
 import           Data.Attoparsec.Combinator
 import           Data.Bits
-import qualified Data.ByteString              as B
+import qualified Data.ByteString              as BS
 import qualified Data.ByteString.Base64       as Base64
 import qualified Data.ByteString.Lazy         as BL
 import qualified Data.ByteString.Lazy.Builder as BL
@@ -52,7 +52,7 @@ import           Data.Monoid
 import           Data.Time
 import           Data.Time.Calendar.WeekDate
 import qualified Data.Text                    as T
-import           Data.Text.Encoding
+import           Data.Text.Encoding           (encodeUtf8)
 import qualified Data.Text.Lazy               as L
 import           Data.Word
 
@@ -77,7 +77,7 @@ parseMaybe s = maybe (fail s) return
 parseEither :: Monad m => Either String a -> m a
 parseEither = either fail return
 
--- | Run a 'Builder' as a strict 'B.ByteString'.
+-- | Run a 'Builder' as a strict 'T.Text'.
 toText :: Builder -> T.Text
 toText = L.toStrict . toLazyText
 
@@ -137,12 +137,20 @@ hexPair = decode <$> hexDigit <*> hexDigit
         | w >= 'A'   = fromEnum w - fromEnum 'A' + 10
         | otherwise = fromEnum w - fromEnum '0'
 
+-- | Check is a char is an ASCII printable char, excluding special characters.
+isPrintable :: String -> Char -> Bool
+isPrintable specials w = w <= '\126' && w >= '\33' && A.notInClass specials w
+
 -- | Parse an token lexeme consisting of all printable characters, but
 --  disallowing the specified special characters.
 tokenWith :: String -> Parser T.Text
 tokenWith specials = lexeme (A.takeWhile1 isAtom)
   where
-    isAtom w = not (isAscii w) || (w <= '\126' && w >= '\33' && A.notInClass specials w)
+    isAtom w = not (isAscii w) || isPrintable specials w
+
+-- | Variant of 'tokenWith' disallowing non-ASCII characters.
+tokenAsciiWith :: String -> Parser BS.ByteString
+tokenAsciiWith specials = encodeUtf8 <$> lexeme (A.takeWhile1 $ isPrintable specials)
 
 -- | Parse an atom, which contains ASCII letters, digits, and the
 -- characters @"!#$%&\'*+-/=?^_`{|}~"@.
@@ -153,18 +161,26 @@ atom = tokenWith "()<>[]:;@\\\",."
 dotAtom :: Parser T.Text
 dotAtom = tokenWith "()<>[]:;@\\\","
 
+-- | MIME special characters.
+mimeSpecials :: String
+mimeSpecials = "()<>@,;:\\\"/[]?="
+
 -- | A MIME token, which contains ASCII letters, digits, and the
 -- characters @"!#$%\'*+-^_`{|}~."@.
 token :: Parser T.Text
-token = tokenWith "()<>@,;:\\\"/[]?="
+token = tokenWith mimeSpecials
+
+-- | Variant of 'token' disallowing non-ASCII characters.
+tokenAscii :: Parser BS.ByteString
+tokenAscii = tokenAsciiWith mimeSpecials
 
 -- | A case-insensitive MIME token.
 tokenCI :: Parser (CI T.Text)
 tokenCI = CI.mk <$> token
 
--- | A case-insensitive MIME token, ByteString version.
-tokenCIbs :: Parser (CI B.ByteString)
-tokenCIbs = CI.mk <$> encodeUtf8 <$> token
+-- | A case-insensitive MIME token, disallowing non-ASCII characters.
+tokenAsciiCI :: Parser (CI BS.ByteString)
+tokenAsciiCI = CI.mk <$> tokenAscii
 
 -- | Parse a quoted-string.
 quotedString :: Parser T.Text
@@ -375,10 +391,10 @@ mimeVersion = (,) <$> number 1 <* symbol '.' <*> number 1
 contentType :: Parser (MimeType, Parameters)
 contentType = (,) <$> mimeType <*> parameters
   where
-    mimeType   = MimeType <$> tokenCIbs <* symbol '/' <*> tokenCIbs
+    mimeType   = MimeType <$> tokenAsciiCI <* symbol '/' <*> tokenAsciiCI
     parameters = Map.fromList <$> many (symbol ';' *> parameter)
     parameter  = (,) <$> tokenCI <* symbol '=' <*> (token <|> quotedString)
 
 -- | Parse the content transfer encoding.
-contentTransferEncoding :: Parser (CI B.ByteString)
-contentTransferEncoding = tokenCIbs
+contentTransferEncoding :: Parser (CI BS.ByteString)
+contentTransferEncoding = tokenAsciiCI

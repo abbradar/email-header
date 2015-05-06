@@ -18,7 +18,6 @@ module Network.Email.Header.Types
 
 import           Control.Exception
 import qualified Data.ByteString      as B
-import qualified Data.ByteString.Lazy as L
 import           Data.CaseInsensitive (CI)
 import           Data.Map.Strict      (Map)
 import qualified Data.Text            as T
