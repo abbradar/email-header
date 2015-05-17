@@ -25,13 +25,13 @@ module Network.Email.Header.Pretty
     ) where
 
 import           Control.Arrow
-import qualified Data.ByteString              as BS
+import qualified Data.ByteString              as B
 import qualified Data.ByteString.Base64       as Base64
 import           Data.ByteString.Internal     (w2c)
 import qualified Data.Text                    as T
-import qualified Data.Text.Encoding           as E
+import qualified Data.Text.Encoding           as T
 import           Data.Text.Lazy.Builder       (Builder)
-import qualified Data.Text.Lazy.Builder       as B
+import qualified Data.Text.Lazy.Builder       as TB
 import           Data.CaseInsensitive         (CI)
 import qualified Data.CaseInsensitive         as CI
 import           Data.Char
@@ -39,7 +39,7 @@ import qualified Data.Map                     as Map
 import           Data.Monoid
 import           Data.Time                    hiding (months)
 import           Data.Time.Calendar.WeekDate
-import qualified Data.Text.Lazy               as L
+import qualified Data.Text.Lazy               as TL
 import           Data.Word
 
 import           Network.Email.Charset
@@ -60,7 +60,7 @@ textCI :: CI T.Text -> Doc
 textCI = text . CI.original
 
 -- | Render a case-insensitive 'T.Text'.
-byteStringCI :: CI BS.ByteString -> Doc
+byteStringCI :: CI B.ByteString -> Doc
 byteStringCI = byteString . CI.original
 
 -- | Format a date and time.
@@ -141,12 +141,12 @@ hex w = toHexDigit a <> toHexDigit b
   where
     (a, b)          = w `divMod` 16
     toHexDigit n
-        | n < 10    = B.singleton $ w2c (n + 48)
-        | otherwise = B.singleton $ w2c (n + 55)
+        | n < 10    = TB.singleton $ w2c (n + 48)
+        | otherwise = TB.singleton $ w2c (n + 55)
 
 -- | Encode a word.
-encodeWord :: RenderOptions -> L.Text -> (Int, Builder)
-encodeWord r = encodeWith (encoding r) . L.toStrict
+encodeWord :: RenderOptions -> TL.Text -> (Int, Builder)
+encodeWord r = encodeWith (encoding r) . TL.toStrict
   where
     useUtf8           = utf8mime r
                      && (charsetName (charset r) == "UTF-8")
@@ -157,39 +157,39 @@ encodeWord r = encodeWith (encoding r) . L.toStrict
     encodeWith Base64 = encodeBase64 . fromUnicode (charset r)
 
     encodeQ           = first getSum .
-                        BS.foldr (\w a -> encodeWord8 w <> a) mempty
+                        B.foldr (\w a -> encodeWord8 w <> a) mempty
 
     encodeQUtf8       = first getSum .
                         T.foldr (\w a -> encodeChar w <> a) mempty
     encodeWord8 w
-        | w == 32      = (Sum 1, B.singleton '_')
-        | isIllegal w = (Sum 3, B.singleton '=' <> hex w)
-        | otherwise   = (Sum 1, B.singleton $ w2c w)
+        | w == 32      = (Sum 1, TB.singleton '_')
+        | isIllegal w = (Sum 3, TB.singleton '=' <> hex w)
+        | otherwise   = (Sum 1, TB.singleton $ w2c w)
     
     encodeChar c
-        | c == ' ' = (Sum 1, B.singleton '_')
+        | c == ' ' = (Sum 1, TB.singleton '_')
         | isAscii c && isIllegal (fromIntegral $ fromEnum c) =
-              BS.foldr (\w a -> (Sum 3, B.singleton '=' <> hex w) <> a) mempty $ E.encodeUtf8 $ T.singleton c
-        | otherwise   = (Sum 1, B.singleton c)
+              B.foldr (\w a -> (Sum 3, TB.singleton '=' <> hex w) <> a) mempty $ T.encodeUtf8 $ T.singleton c
+        | otherwise   = (Sum 1, TB.singleton c)
 
     isIllegal w       = w < 33
                      || w > 126
-                     || w `BS.elem` "()<>[]:;@\\\",?=_"
+                     || w `B.elem` "()<>[]:;@\\\",?=_"
 
     encodeBase64 b    = let e = Base64.encode b
-                        in (BS.length e, B.fromText $ E.decodeUtf8 e)
+                        in (B.length e, TB.fromText $ T.decodeUtf8 e)
 
 -- | Split nonempty text into a layout that fits the given width and the
 -- remainder.
 -- TODO: inefficient
-splitWord :: RenderOptions -> Int -> L.Text -> (Layout Builder, L.Text)
+splitWord :: RenderOptions -> Int -> TL.Text -> (Layout Builder, TL.Text)
 splitWord r w t =
     first (uncurry F.span) .
     last .
     takeWhile1 (fits . fst) .
     map (first (encodeWord r)) .
     drop 1 $
-    zip (L.inits t) (L.tails t)
+    zip (TL.inits t) (TL.tails t)
   where
     fits (l, _) = l <= w
 
@@ -197,9 +197,9 @@ splitWord r w t =
     takeWhile1 p (x:xs) = x : takeWhile p xs
 
 -- | Layout text as an encoded word.
-layoutText :: RenderOptions -> Bool -> L.Text -> Layout Builder
+layoutText :: RenderOptions -> Bool -> TL.Text -> Layout Builder
 layoutText r h t0
-    | L.null t0 = mempty
+    | TL.null t0 = mempty
     | h         = prefix <> uncurry F.span (encodeWord r t0) <> postfix
     | otherwise = splitLines t0
   where
@@ -210,36 +210,36 @@ layoutText r h t0
         Base64 -> 'B'
 
     prefix  = F.span (5 + length name) $
-        B.fromText "=?" <>
-        B.fromString name <>
-        B.singleton '?' <>
-        B.singleton method <>
-        B.singleton '?'
+        TB.fromText "=?" <>
+        TB.fromString name <>
+        TB.singleton '?' <>
+        TB.singleton method <>
+        TB.singleton '?'
 
-    postfix = F.span 2 (B.fromText "?=")
+    postfix = F.span 2 (TB.fromText "?=")
 
     padding = 7 + length name
 
     splitLines t = F.position $ \p ->
         let (l, t') = splitWord r (lineWidth r - padding - p) t
         in  prefix <> l <> postfix <>
-            (if L.null t' then mempty else newline r <> splitLines t')
+            (if TL.null t' then mempty else newline r <> splitLines t')
 
 -- | Encode text as an encoded word.
-encodeText :: L.Text -> Doc
+encodeText :: TL.Text -> Doc
 encodeText t = prim $ \r h -> layoutText r h t
 
 -- | Encode text, given a predicate that checks for illegal characters.
-renderText :: (Char -> Bool) -> L.Text -> Doc
+renderText :: (Char -> Bool) -> TL.Text -> Doc
 renderText isIllegalChar t
     | mustEncode = encodeText t
     | otherwise  = sep (map lazyText ws)
   where
-    ws         = L.words t
+    ws         = TL.words t
 
-    mustEncode = L.unwords ws /= t
-              || any ("=?" `L.isPrefixOf`) ws
-              || L.any isIllegalChar t
+    mustEncode = TL.unwords ws /= t
+              || any ("=?" `TL.isPrefixOf`) ws
+              || TL.any isIllegalChar t
 
 -- | Format a phrase. The text is encoded as is, unless:
 --
@@ -249,11 +249,11 @@ renderText isIllegalChar t
 -- * Any word begins with @=?@
 --
 -- * Any word contains illegal characters
-phrase :: L.Text -> Doc
+phrase :: TL.Text -> Doc
 phrase = renderText (\c -> c > '~' || c < '!' || c `elem` ("()<>[]:;@\\\"," :: String))
 
 -- | Format a list of phrases.
-phraseList :: [L.Text] -> Doc
+phraseList :: [TL.Text] -> Doc
 phraseList = commaSep phrase
 
 -- | Format unstructured text. The text is encoded as is, unless:
@@ -264,7 +264,7 @@ phraseList = commaSep phrase
 -- * Any word begins with @=?@
 --
 -- * Any word contains illegal characters
-unstructured :: L.Text -> Doc
+unstructured :: TL.Text -> Doc
 unstructured = renderText (\c -> c > '~' || c < '!')
 
 -- | Format the MIME version.
@@ -282,5 +282,5 @@ contentType (MimeType t s) params = sep . punctuate ";" $
     renderParam (k, v) = textCI k <> "=" <> text v
 
 -- | Format the content transfer encoding.
-contentTransferEncoding :: CI BS.ByteString -> Doc
+contentTransferEncoding :: CI B.ByteString -> Doc
 contentTransferEncoding = byteStringCI

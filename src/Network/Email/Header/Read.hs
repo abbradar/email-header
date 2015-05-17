@@ -6,7 +6,6 @@
 module Network.Email.Header.Read
     ( -- * Parsing
       field
-    , structuredField
       -- * Origination date field
     , date
       -- * Originator fields
@@ -38,15 +37,19 @@ module Network.Email.Header.Read
     , contentType
     , contentTransferEncoding
     , contentID
+    , boundary
     ) where
 
 import           Control.Applicative
+import           Control.Monad
 import           Control.Monad.Catch
+import qualified Data.Map                    as M
 import           Data.Attoparsec.Combinator
 import           Data.Attoparsec.Text.Lazy
 import qualified Data.ByteString             as B
 import           Data.CaseInsensitive        (CI)
-import qualified Data.Text.Lazy              as L
+import qualified Data.Text.Lazy              as TL
+import qualified Data.Text.Encoding          as T
 import           Data.Time.LocalTime
 
 import qualified Network.Email.Header.Parser as P
@@ -58,109 +61,113 @@ field k p hs = do
     body <- case lookup k hs of
         Nothing -> throwM $ MissingHeader k
         Just b  -> return b
-    case parse p body of
+    case parse (P.cfws *> p <* endOfInput) body of
         Fail _ _ s -> throwM $ HeaderParseError (k, body) s
         Done _ a   -> return a
 
--- | Lookup and parse a structured header with a parser. This skips initial
--- comments and folding white space, and ensures that the entire body is
--- consumed by the parser.
-structuredField :: MonadThrow m => HeaderName -> Parser a -> Headers -> m a
-structuredField k p = field k (P.cfws *> p <* endOfInput)
-
 -- | Get the value of the @Date:@ field.
 date :: MonadThrow m => Headers -> m ZonedTime
-date = structuredField "Date" P.dateTime
+date = field "Date" P.dateTime
 
 -- | Get the value of the @From:@ field.
 from :: MonadThrow m => Headers -> m [Mailbox]
-from = structuredField "From" P.mailboxList
+from = field "From" P.mailboxList
 
 -- | Get the value of the @Sender:@ field.
 sender :: MonadThrow m => Headers -> m Mailbox
-sender = structuredField "Sender" P.mailbox
+sender = field "Sender" P.mailbox
 
 -- | Get the value of the @Reply-To:@ field.
 replyTo :: MonadThrow m => Headers -> m [Recipient]
-replyTo = structuredField "Reply-To" P.recipientList
+replyTo = field "Reply-To" P.recipientList
 
 -- | Get the value of the @To:@ field.
 to :: MonadThrow m => Headers -> m [Recipient]
-to = structuredField "To" P.recipientList
+to = field "To" P.recipientList
 
 -- | Get the value of the @Cc:@ field.
 cc :: MonadThrow m => Headers -> m [Recipient]
-cc = structuredField "Cc" P.recipientList
+cc = field "Cc" P.recipientList
 
 -- | Get the value of the @Bcc:@ field.
 bcc :: MonadThrow m => Headers -> m (Maybe [Recipient])
-bcc = structuredField "Bcc" (optional P.recipientList)
+bcc = field "Bcc" (optional P.recipientList)
 
 -- | Get the value of the @Message-ID:@ field.
 messageID :: MonadThrow m => Headers -> m MessageID
-messageID = structuredField "Message-ID" P.messageID
+messageID = field "Message-ID" P.messageID
 
 -- | Get the value of the @In-Reply-To:@ field.
 inReplyTo :: MonadThrow m => Headers -> m [MessageID]
-inReplyTo = structuredField "In-Reply-To" (many1 P.messageID)
+inReplyTo = field "In-Reply-To" (many1 P.messageID)
 
 -- | Get the value of the @References:@ field.
 references :: MonadThrow m => Headers -> m [MessageID]
-references = structuredField "References" (many1 P.messageID)
+references = field "References" (many1 P.messageID)
 
 -- | Get the value of the @Subject:@ field.
-subject :: MonadThrow m => Headers -> m L.Text
+subject :: MonadThrow m => Headers -> m TL.Text
 subject = field "Subject" P.unstructured
 
 -- | Get the value of the @Comments:@ field.
-comments :: MonadThrow m => Headers -> m L.Text
+comments :: MonadThrow m => Headers -> m TL.Text
 comments = field "Comments" P.unstructured
 
 -- | Get the value of the @Keywords:@ field.
-keywords :: MonadThrow m => Headers -> m [L.Text]
-keywords = structuredField "Keywords" P.phraseList
+keywords :: MonadThrow m => Headers -> m [TL.Text]
+keywords = field "Keywords" P.phraseList
 
 -- | Get the value of the @Resent-Date:@ field.
 resentDate :: MonadThrow m => Headers -> m ZonedTime
-resentDate = structuredField "Resent-Date" P.dateTime
+resentDate = field "Resent-Date" P.dateTime
 
 -- | Get the value of the @Resent-From:@ field.
 resentFrom :: MonadThrow m => Headers -> m [Mailbox]
-resentFrom = structuredField "Resent-From" P.mailboxList
+resentFrom = field "Resent-From" P.mailboxList
 
 -- | Get the value of the @Resent-Sender:@ field.
 resentSender :: MonadThrow m => Headers -> m Mailbox
-resentSender = structuredField "Resent-Sender" P.mailbox
+resentSender = field "Resent-Sender" P.mailbox
 
 -- | Get the value of the @Resent-To:@ field.
 resentTo :: MonadThrow m => Headers -> m [Recipient]
-resentTo = structuredField "Resent-To" P.recipientList
+resentTo = field "Resent-To" P.recipientList
 
 -- | Get the value of the @Resent-Cc:@ field.
 resentCc :: MonadThrow m => Headers -> m [Recipient]
-resentCc = structuredField "Resent-Cc" P.recipientList
+resentCc = field "Resent-Cc" P.recipientList
 
 -- | Get the value of the @Resent-Bcc:@ field.
 resentBcc :: MonadThrow m => Headers -> m (Maybe [Recipient])
-resentBcc = structuredField "Resent-Bcc" (optional P.recipientList)
+resentBcc = field "Resent-Bcc" (optional P.recipientList)
 
 -- | Get the value of the @Resent-Message-ID:@ field.
 resentMessageID :: MonadThrow m => Headers -> m MessageID
-resentMessageID = structuredField "Resent-Message-ID" P.messageID
+resentMessageID = field "Resent-Message-ID" P.messageID
 
 -- | Get the value of the @MIME-Version:@ field.
 mimeVersion :: MonadThrow m => Headers -> m (Int, Int)
-mimeVersion = structuredField "MIME-Version" P.mimeVersion
+mimeVersion = field "MIME-Version" P.mimeVersion
 
 -- | Get the value of the @Content-Type:@ field.
 contentType :: MonadThrow m => Headers -> m (MimeType, Parameters)
-contentType = structuredField "Content-Type" P.contentType
+contentType = field "Content-Type" P.contentType
 
 -- | Get the value of the @Content-Transfer-Encoding:@ field.
 contentTransferEncoding :: MonadThrow m => Headers -> m (CI B.ByteString)
 contentTransferEncoding =
-    structuredField "Content-Transfer-Encoding" P.contentTransferEncoding
+    field "Content-Transfer-Encoding" P.contentTransferEncoding
 
 -- | Get the value of the @Content-ID:@ field.
 contentID :: MonadThrow m => Headers -> m MessageID
-contentID = structuredField "Content-ID" P.messageID
+contentID = field "Content-ID" P.messageID
+
+-- | Get the value of the MIME multipart boundary.
+boundary :: MonadThrow m => Headers -> m B.ByteString
+boundary hdrs = do
+  (tp, params) <- contentType hdrs
+  unless (mimeType tp == "multipart") $ throwM $
+    InvalidHeader "Content-Type" "Content is not multipart"
+  case M.lookup "boundary" params of
+   Nothing -> throwM $ InvalidHeader "Content-Type" "Multipart content has undefined boundary"
+   Just r -> return $ T.encodeUtf8 r

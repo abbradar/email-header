@@ -29,15 +29,15 @@ module Network.Email.Header.Doc
     , punctuate
     ) where
 
-import qualified Data.ByteString              as BS
-import           Data.Text.Lazy.Builder       (Builder)
-import qualified Data.Text.Lazy.Builder       as B
+import qualified Data.ByteString              as B
 import           Data.List                    (intersperse)
 import           Data.Monoid
 import           Data.String
 import qualified Data.Text                    as T
 import qualified Data.Text.Encoding           as T
-import qualified Data.Text.Lazy               as L
+import qualified Data.Text.Lazy               as TL
+import           Data.Text.Lazy.Builder       (Builder)
+import qualified Data.Text.Lazy.Builder       as TB
 
 import           Network.Email.Charset
 import           Network.Email.Header.Layout  (Layout)
@@ -69,7 +69,7 @@ data Encoding
     deriving (Eq, Ord, Read, Show, Enum, Bounded)
 
 -- | Default rendering options, which uses a line width of 80, and indent of 2,
--- and utf-8 quated-printable encoding.
+-- and utf-8 quoted-printable encoding.
 defaultRenderOptions :: RenderOptions
 defaultRenderOptions = RenderOptions
     { lineWidth = 80
@@ -123,35 +123,35 @@ flatten (Union x _) = x
 group :: Doc -> Doc
 group x = Union (flatten x) x
 
--- | Construct a 'Doc' from a 'B.Builder' and a length.
+-- | Construct a 'Doc' from a 'TL.Builder' and a length.
 builder :: Int -> Builder -> Doc
 builder k s = prim $ \_ _ -> F.span k s
 
 -- | Construct a 'Doc' from a 'String'.
 string :: String -> Doc
-string s = builder (length s) (B.fromString s)
+string s = builder (length s) (TB.fromString s)
 
--- | Construct a 'Doc' from a 'B.ByteString'.
-byteString :: BS.ByteString -> Doc
+-- | Construct a 'Doc' from a 'TL.ByteString'.
+byteString :: B.ByteString -> Doc
 byteString = text . T.decodeLatin1
 
--- | Construct a 'Builder' from a 'L.Text'.
+-- | Construct a 'Builder' from a 'TL.Text'.
 text :: T.Text -> Doc
-text s =  builder (T.length s) (B.fromText s)
+text s =  builder (T.length s) (TB.fromText s)
 
--- | Construct a 'Builder' from a 'L.Text'.
-lazyText :: L.Text -> Doc
-lazyText = text . L.toStrict
+-- | Construct a 'Builder' from a 'TL.Text'.
+lazyText :: TL.Text -> Doc
+lazyText = text . TL.toStrict
 
 -- | A space layout.
 space :: Layout Builder
-space = F.span 1 (B.singleton ' ')
+space = F.span 1 (TB.singleton ' ')
 
 -- | A newline layout. This will emit a @CRLF@ pair, break to a new line,
 -- and indent.
 newline :: RenderOptions -> Layout Builder
 newline r =
-    F.span 2 (B.fromText "\r\n") <>
+    F.span 2 (TB.fromText "\r\n") <>
     F.break 0 <>
     mconcat (replicate1 (indent r) space)
   where

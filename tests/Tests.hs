@@ -1,4 +1,4 @@
-{-# LANGUAGE OverloadedStrings #-}
+{-# LANGUAGE OverloadedStrings, LambdaCase #-}
 {-# OPTIONS_GHC -fno-warn-orphans #-}
 module Main
     ( main
@@ -48,10 +48,10 @@ char = frequency
     ]
 
 text :: Gen L.Text
-text = L.pack <$> listOf char
+text = L.pack <$> listOf char `suchThat` (\case (' ':_) -> False; _ -> True)
 
 phrase :: Gen L.Text
-phrase = L.pack <$> listOf1 char
+phrase = resize 4 $ L.intercalate " " <$> listOf1 (L.fromStrict <$> token)
 
 tokenChars :: String
 tokenChars = ['a'..'z'] ++ ['A'..'Z'] ++ ['0'..'9'] ++ "!#$%&'*+-^_`{|}~"
@@ -59,7 +59,7 @@ tokenChars = ['a'..'z'] ++ ['A'..'Z'] ++ ['0'..'9'] ++ "!#$%&'*+-^_`{|}~"
 token :: Gen T.Text
 token = resize 20 $ T.pack <$> listOf1 (elements ttext)  -- TODO
   where
-    ttext = tokenChars ++ ['а'..'я']
+    ttext = tokenChars -- ++ ['а'..'я']
 
 tokenAscii :: Gen B.ByteString
 tokenAscii = resize 20 $ B.pack <$> listOf1 (elements tokenChars)  -- TODO

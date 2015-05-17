@@ -8,6 +8,8 @@ module Network.Email.Header.Render
       RenderOptions(..)
     , Encoding(..)
     , defaultRenderOptions
+      -- * Text output
+    , outputHeaders
       -- * Rendering
     , Doc
     , renderHeaders
@@ -44,16 +46,27 @@ module Network.Email.Header.Render
     , contentID
     ) where
 
-import qualified Data.ByteString              as BS
-import qualified Data.Text.Lazy.Builder       as B
+import           Data.Monoid
+import qualified Data.ByteString              as B
 import           Data.CaseInsensitive         (CI)
 import qualified Data.CaseInsensitive         as CI
-import qualified Data.Text.Lazy               as L
+import qualified Data.Text.Encoding           as T
+import           Data.Text.Lazy.Builder       (Builder)
+import qualified Data.Text.Lazy.Builder       as TB
+import qualified Data.Text.Lazy               as TL
 import           Data.Time.LocalTime
 
 import           Network.Email.Header.Doc
 import qualified Network.Email.Header.Pretty  as P
 import           Network.Email.Header.Types
+
+-- | Output headers as text.
+outputHeaders :: Headers -> Builder
+outputHeaders = mconcat . map output
+  where output (k, b) = TB.fromText (T.decodeUtf8 $ CI.original k)
+                        <> ": "
+                        <> TB.fromLazyText b
+                        <> TB.fromText "\r\n"
 
 -- | Render a list of headers.
 renderHeaders :: RenderOptions -> [(HeaderName, Doc)] -> Headers
@@ -61,9 +74,9 @@ renderHeaders r = map (renderHeader r)
 
 -- | Render a header.
 renderHeader :: RenderOptions -> (HeaderName, Doc) -> Header
-renderHeader r (k, b) = (k, B.toLazyText l)
+renderHeader r (k, b) = (k, TB.toLazyText l)
   where
-    l = render r (BS.length (CI.original k) + 2) b
+    l = render r (B.length (CI.original k) + 2) b
 
 -- | Build a header field.
 buildField :: HeaderName -> (a -> Doc) -> a -> (HeaderName, Doc)
@@ -110,15 +123,15 @@ references :: [MessageID] -> (HeaderName, Doc)
 references = buildField "References" (sep . map P.messageID)
 
 -- | Create a @Subject:@ field.
-subject :: L.Text -> (HeaderName, Doc)
+subject :: TL.Text -> (HeaderName, Doc)
 subject = buildField "Subject" P.unstructured
 
 -- | Create a @Comments:@ field.
-comments :: L.Text -> (HeaderName, Doc)
+comments :: TL.Text -> (HeaderName, Doc)
 comments = buildField "Comments" P.unstructured
 
 -- | Create a @Keywords:@ field.
-keywords :: [L.Text] -> (HeaderName, Doc)
+keywords :: [TL.Text] -> (HeaderName, Doc)
 keywords = buildField "Keywords" P.phraseList
 
 -- | Create a @Resent-Date:@ field.
@@ -158,7 +171,7 @@ contentType :: MimeType -> Parameters -> (HeaderName, Doc)
 contentType t params = ("Content-Type", P.contentType t params)
 
 -- | Create a @Content-Transfer-Encoding:@ field.
-contentTransferEncoding :: CI BS.ByteString -> (HeaderName, Doc)
+contentTransferEncoding :: CI B.ByteString -> (HeaderName, Doc)
 contentTransferEncoding =
     buildField "Content-Transfer-Encoding" P.contentTransferEncoding
 

@@ -3,8 +3,12 @@
 -- 'cfws', and 'unstructured') are for parsing structured header fields.
 -- They expect no leading space and will eat an trailing white space.
 module Network.Email.Header.Parser
-    ( -- * Whitespace
-      fws
+    ( -- * Utils
+      hexPair
+    , parseEither
+    , parseMaybe
+      -- * Whitespace
+    , fws
     , cfws
      -- * Combinators
     , lexeme
@@ -37,27 +41,29 @@ module Network.Email.Header.Parser
 
 import           Control.Applicative
 import           Control.Monad
-import           Data.Attoparsec.Text         (Parser)
-import qualified Data.Attoparsec.Text         as A
+import           Data.Attoparsec.Text             (Parser)
+import qualified Data.Attoparsec.Text             as A
+import qualified Data.Attoparsec.ByteString.Char8 as AB
 import           Data.Char
+import           Data.Function
 import           Data.Attoparsec.Combinator
 import           Data.Bits
-import qualified Data.ByteString              as BS
-import qualified Data.ByteString.Base64       as Base64
-import qualified Data.ByteString.Lazy         as BL
-import qualified Data.ByteString.Lazy.Builder as BL
-import           Data.Text.Lazy.Builder
-import           Data.CaseInsensitive         (CI)
-import qualified Data.CaseInsensitive         as CI
+import qualified Data.ByteString.Char8            as B
+import qualified Data.ByteString.Base64           as Base64
+import qualified Data.ByteString.Lazy             as BL
+import qualified Data.ByteString.Lazy.Builder     as BL
+import           Data.CaseInsensitive             (CI)
+import qualified Data.CaseInsensitive             as CI
 import           Data.List
-import qualified Data.Map.Strict              as Map
+import qualified Data.Map.Strict                  as Map
 import           Data.Maybe
 import           Data.Monoid
 import           Data.Time
 import           Data.Time.Calendar.WeekDate
-import qualified Data.Text                    as T
-import           Data.Text.Encoding           (encodeUtf8)
-import qualified Data.Text.Lazy               as L
+import qualified Data.Text                        as T
+import           Data.Text.Encoding               as T
+import qualified Data.Text.Lazy                   as TL
+import qualified Data.Text.Lazy.Builder           as TB
 import           Data.Word
 
 import           Network.Email.Charset
@@ -82,27 +88,29 @@ parseEither :: Monad m => Either String a -> m a
 parseEither = either fail return
 
 -- | Run a 'Builder' as a strict 'T.Text'.
-toText :: Builder -> T.Text
-toText = L.toStrict . toLazyText
+toText :: TB.Builder -> T.Text
+toText = TL.toStrict . TB.toLazyText
 
 -- | Skip folding whitespace.
-fws :: Parser ()
-fws = A.skipSpace
+fws :: Parser (Maybe Char)
+fws = optional $ ' ' <$ (A.skip (== ' ') <|> void (A.string "\r\n ")) <* fws
+
+-- | Check if a char is an non-whitespace control char.
+isNoWsCtl :: Char -> Bool
+isNoWsCtl = A.inClass "\1-\8\11\12\14-\31\127"
+
+-- | Check if a char is a valid quoted char.
 
 -- | Parse a comment, including all nested comments.
-comment :: Parser T.Text
-comment = A.char '(' *> A.scan (0 :: Int, False) f <* A.char ')'
-  where
-    f (!n, True ) _ = Just (n, False)
-    f (!n, False) w = case w of
-        '('  -> Just (n + 1, False)
-        ')'  -> if n == 0 then Nothing else Just (n - 1, False)
-        '\\' -> Just (n, True)
-        _    -> Just (n, False)
+comment :: Parser TL.Text
+-- Technically we are expected to parse encoded-words in comments, but we don't need to.
+comment = TB.toLazyText <$> fix (scanString '(' ')') -- <|> encodedWord
 
--- | Skip any comments or folding whitespace.
+-- | Skip any comments or folding white space.
 cfws :: Parser ()
-cfws = () <$ fws `sepBy` comment
+cfws = void $ optional $ do
+  s <- fws
+  void (many1 $ comment *> fws) <|> unless (isJust s) (fail "No folding white space")
 
 -- | Parse a value followed by whitespace.
 lexeme :: Parser a -> Parser a
@@ -131,39 +139,36 @@ number :: Integral a => Int -> Parser a
 number = lexeme . digits
 
 -- | Parse a hexadecimal pair.
-hexPair :: Parser Word8
+hexPair :: AB.Parser Word8
 hexPair = decode <$> hexDigit <*> hexDigit
   where
     decode a b      = shiftL a 4 .|. b
-    hexDigit        = fromIntegral <$> fromHexDigit <$> A.satisfy (A.inClass "\48-\57\64-\70\97-\102")
+    hexDigit        = fromIntegral <$> fromHexDigit <$> AB.satisfy (AB.inClass "0-9A-F")
     fromHexDigit w
-        | w >= 'a'   = fromEnum w - fromEnum 'a' + 10
         | w >= 'A'   = fromEnum w - fromEnum 'A' + 10
         | otherwise = fromEnum w - fromEnum '0'
 
--- | Check is a char is an ASCII printable char, excluding special characters.
+-- | Check if a char is an ASCII printable char, excluding special characters.
 isPrintable :: String -> Char -> Bool
 isPrintable specials w = w <= '\126' && w >= '\33' && A.notInClass specials w
+
+-- | Check if a char is an Unicode or ASCII printable char, excluding special characters.
+isPrintableU :: String -> Char -> Bool
+isPrintableU specials w = not (isAscii w) || isPrintable specials w
 
 -- | Parse an token lexeme consisting of all printable characters, but
 --  disallowing the specified special characters.
 tokenWith :: String -> Parser T.Text
-tokenWith specials = lexeme (A.takeWhile1 isAtom)
-  where
-    isAtom w = not (isAscii w) || isPrintable specials w
+tokenWith specials = lexeme (A.takeWhile1 $ isPrintableU specials)
 
 -- | Variant of 'tokenWith' disallowing non-ASCII characters.
-tokenAsciiWith :: String -> Parser BS.ByteString
+tokenAsciiWith :: String -> Parser B.ByteString
 tokenAsciiWith specials = encodeUtf8 <$> lexeme (A.takeWhile1 $ isPrintable specials)
 
 -- | Parse an atom, which contains ASCII letters, digits, and the
 -- characters @"!#$%&\'*+-/=?^_`{|}~"@.
-atom :: Parser T.Text
-atom = tokenWith "()<>[]:;@\\\",."
-
--- | Parse a dot-atom, or an atom which may contain periods.
-dotAtom :: Parser T.Text
-dotAtom = tokenWith "()<>[]:;@\\\","
+atom :: Parser TB.Builder
+atom = TB.fromText <$> tokenWith "()<>[]:;@\\,\"."
 
 -- | MIME special characters.
 mimeSpecials :: String
@@ -175,7 +180,7 @@ token :: Parser T.Text
 token = tokenWith mimeSpecials
 
 -- | Variant of 'token' disallowing non-ASCII characters.
-tokenAscii :: Parser BS.ByteString
+tokenAscii :: Parser B.ByteString
 tokenAscii = tokenAsciiWith mimeSpecials
 
 -- | A case-insensitive MIME token.
@@ -183,72 +188,72 @@ tokenCI :: Parser (CI T.Text)
 tokenCI = CI.mk <$> token
 
 -- | A case-insensitive MIME token, disallowing non-ASCII characters.
-tokenAsciiCI :: Parser (CI BS.ByteString)
+tokenAsciiCI :: Parser (CI B.ByteString)
 tokenAsciiCI = CI.mk <$> tokenAscii
 
 -- | Parse a quoted-string.
-quotedString :: Parser T.Text
-quotedString = lexeme $
-    toText <$ A.char '"' <*> concatMany quotedChar <* A.char '"'
-  where
-    quotedChar = mempty <$ A.string "\r\n" 
-             <|> singleton <$ A.char '\\' <*> A.anyChar
-             <|> singleton <$> A.satisfy (/= '"')
+quotedString :: Parser TB.Builder
+quotedString = lexeme $ scanString '"' '"' mempty
 
 -- | Parse an encoded word, as per RFC 2047.
-encodedWord :: Parser T.Text
+encodedWord :: Parser TB.Builder
 encodedWord = do
     _      <- A.string "=?"
-    name   <- T.unpack <$> tokenWith "()<>@,;:\"/[]?.="
+    cname  <- T.unpack <$> tokenNoWS
     _      <- A.char '?'
-    method <- decodeMethod
+    mname  <- CI.mk <$> tokenNoWS
     _      <- A.char '?'
-    enc    <- method
+    enc    <- encoded
     _      <- A.string "?="
 
-    charset <- parseMaybe "charset not found" $ lookupCharset name
-    return $ toUnicode charset enc
+    method <- decodeMethod mname
+    body   <- parseEither $ method enc
+    charset <- parseMaybe "charset not found" $ lookupCharset cname
+
+    return $ TB.fromText $ toUnicode charset body
   where
-    decodeMethod = quoted       <$ A.satisfy (A.inClass "Qq")
-               <|> base64String <$ A.satisfy (A.inClass "Bb")
+    decodeMethod "Q" = return quoted
+    decodeMethod "B" = return base64
+    decodeMethod _   = fail "Unknown encoding method"
 
-    quoted       = BL.toStrict <$> BL.toLazyByteString <$> concatMany quotedChar
+    tokenNoWS        = A.takeWhile1 (isPrintable mimeSpecials)
 
-    quotedChar   = BL.byteString <$> encodeUtf8 <$> T.map underscore <$> A.takeWhile1 (A.notInClass "= ?")
-                   <|> BL.word8 <$ A.char '=' <*> hexPair
+    encoded          = T.encodeUtf8 <$> A.takeWhile1 (isPrintableU "?")
 
-    underscore '_' = ' '
-    underscore a = a
+    quoted           = AB.parseOnly (quotedParse <* AB.endOfInput)
 
-    base64String = do
-        s <- encodeUtf8 <$> A.takeWhile (/= '?')
-        parseEither (Base64.decode s)
+    quotedParse      = BL.toStrict <$> BL.toLazyByteString <$> concatMany quotedChar
+
+    quotedChar       = BL.byteString <$> B.map underscore <$> AB.takeWhile1 (/= '=')
+                       <|> BL.word8 <$ AB.char '=' <*> hexPair
+                       <|> mempty <$ AB.string "\r\n "
+
+    underscore '_'   = ' '
+    underscore c     = c
+
+    base64           = Base64.decode
 
 -- | Return a quoted string as-is.
-scanString :: Char -> Char -> Parser Builder
-scanString start end = lexeme $ do
-    s <- fromText <$ A.char start <*> A.scan False f <* A.char end
-    return (singleton start <> s <> singleton end)
-  where
-    f True  _       = Just False
-    f False c
-        | c == end  = Nothing
-        | c == '\\' = Just True
-        | otherwise = Just False
+scanString :: Char -> Char -> Parser TB.Builder -> Parser TB.Builder
+scanString start end addrules = TB.singleton <$> A.char start <+> body <+> TB.singleton <$> A.char end
+  where body = addrules
+               <|> TB.fromText <$> A.takeWhile1 isBodyChar
+               <|> TB.singleton <$ A.char '\\' <*> A.satisfy isQuotedChar
+        isBodyChar c = isNoWsCtl c || isPrintableU (start:end:"\\") c
+        isQuotedChar c = isNoWsCtl c || isPrintableU "" c
 
 -- | Parse an email address, stripping out whitespace and comments.
 addrSpec :: Parser T.Text
 addrSpec = toText <$> (localPart <+> at <+> domain)
   where
-    at            = singleton <$> symbol '@'
-    dot           = singleton <$> symbol '.'
+    at            = TB.singleton <$> symbol '@'
+    dot           = TB.singleton <$> symbol '.'
     dotSep p      = p <+> concatMany (dot <+> p)
 
-    addrAtom      = fromText <$> atom
-    addrQuote     = scanString '"' '"'
-    domainLiteral = scanString '[' ']'
+    addrAtom      = atom
+    domainLiteral = lexeme $ scanString '[' ']' mempty
 
-    localPart     = dotSep (addrAtom <|> addrQuote)
+    localPart     = dotSep (atom <|> quotedString)
     domain        = dotSep addrAtom <|> domainLiteral
 
 -- | Parse an address specification in angle brackets.
@@ -357,35 +362,31 @@ messageID = MessageID <$> angleAddrSpec
 messageIDList :: Parser [MessageID]
 messageIDList = many1 messageID
 
--- | Combine a list of text elements (atoms, quoted strings, encoded words,
--- etc.) into a larger phrase.
-fromElements :: [T.Text] -> L.Text
-fromElements = L.fromChunks . intersperse (T.singleton ' ')
-
 -- | Parse a phrase. Adjacent encoded words are concatenated. White space
 -- is reduced to a single space, except when quoted or part of an encoded
 -- word.
-phrase :: Parser L.Text
-phrase = fromElements <$> many1 element
+phrase :: Parser TL.Text
+phrase = TB.toLazyText <$> mconcat <$>
+         ((:) <$> element <*> many (element <|> TB.singleton <$> symbol '.'))
   where
-    element = T.concat     <$> many1 (lexeme encodedWord)
+    element = mconcat <$> many1 (lexeme encodedWord)
           <|> quotedString
-          <|> dotAtom
+          <|> atom
 
 -- | Parse a comma-separated list of phrases.
-phraseList :: Parser [L.Text]
+phraseList :: Parser [TL.Text]
 phraseList = commaSep phrase
 
 -- | Parse unstructured text. Adjacent encoded words are concatenated.
 -- White space is reduced to a single space, except when part of an encoded
 -- word.
-unstructured :: Parser L.Text
-unstructured = fromElements <$ fws <*> many element <* A.endOfInput
+unstructured :: Parser TL.Text
+unstructured = TB.toLazyText <$> mconcat <$> intersperse (TB.singleton ' ') <$> many element
   where
-    element = T.concat     <$> many1 (encodedWord <* fws)
-          <|> word <* fws
+    element = mconcat <$> many1 (encodedWord <* fws)
+              <|> word <* fws
 
-    word    = A.takeWhile1 (not . (== ' '))
+    word    = TB.fromText <$> A.takeWhile1 (\x -> isPrintableU "" x || x == ' ')
 
 -- | Parse the MIME version (which should be 1.0).
 mimeVersion :: Parser (Int, Int)
@@ -397,10 +398,10 @@ contentType = (,) <$> mimeType <*> parameters
   where
     mimeType   = MimeType <$> tokenAsciiCI <* symbol '/' <*> tokenAsciiCI
     parameters = Map.fromList <$> many (symbol ';' *> parameter)
-    parameter  = (,) <$> tokenCI <* symbol '=' <*> (token <|> quotedString)
+    parameter  = (,) <$> tokenCI <* symbol '=' <*> (token <|> toText <$> quotedString)
 
 -- | Parse the content transfer encoding.
-contentTransferEncoding :: Parser (CI BS.ByteString)
+contentTransferEncoding :: Parser (CI B.ByteString)
 contentTransferEncoding = tokenAsciiCI
 
 -- | Parse the ASCII header name.
@@ -409,11 +410,17 @@ headerName = CI.mk <$> encodeUtf8 <$> A.takeWhile1 (isPrintable ":")
 
 -- | Parse one header field, without parsing insides.
 header :: Parser Header
-header = (,) <$> headerName <* A.char ':' <* cfws <*> (L.fromChunks <$> body)
+header = (,) <$> headerName <* A.char ':' <*> (TB.toLazyText <$> body)
   where body = do
-          str <- A.takeWhile (/= '\r')
-          [str] <$ A.string "\r\n"
-            <|> (str:) <$> ((:) <$> (T.singleton <$> A.anyChar) <*> body)
+          str <- TB.fromText <$> A.takeWhile (/= '\r')
+          next <- end
+                  <|> (<>) <$> (TB.singleton <$> A.anyChar) <*> body
+          return $ str <> next
+        end = do
+          _ <- A.string "\r\n"
+          c <- A.peekChar'
+          unless (c /= ' ') $ fail "Folding whitespace"
+          return mempty
 
 -- | Split multiple headers.
 headers :: Parser Headers

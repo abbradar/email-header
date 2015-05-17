@@ -21,14 +21,14 @@ import qualified Data.ByteString      as B
 import           Data.CaseInsensitive (CI)
 import           Data.Map.Strict      (Map)
 import qualified Data.Text            as T
-import qualified Data.Text.Lazy       as L
+import qualified Data.Text.Lazy       as TL
 import           Data.Typeable
 
 -- | An email header name.
 type HeaderName = CI B.ByteString
 
 -- | An email header.
-type Header = (HeaderName, L.Text)
+type Header = (HeaderName, TL.Text)
 
 -- | A set of email headers, in order.
 type Headers = [Header]
@@ -39,7 +39,7 @@ newtype Address = Address T.Text
 
 -- | A 'Mailbox' receives mail.
 data Mailbox = Mailbox
-    { displayName    :: Maybe L.Text
+    { displayName    :: Maybe TL.Text
     , mailboxAddress :: Address
     } deriving (Eq, Show)
 
@@ -48,7 +48,7 @@ data Mailbox = Mailbox
 -- @'Mailbox'es@.
 data Recipient
     = Individual Mailbox
-    | Group L.Text [Mailbox]
+    | Group TL.Text [Mailbox]
     deriving (Eq, Show)
 
 -- | A message identifier, which has a similar format to an email address.
@@ -70,6 +70,8 @@ data HeaderException
     = MissingHeader HeaderName
       -- | A header field could not be parsed.
     | HeaderParseError Header String
+      -- | Header has incorrect or unsuitable value.
+    | InvalidHeader HeaderName String
     deriving (Show, Typeable)
 
 instance Exception HeaderException
