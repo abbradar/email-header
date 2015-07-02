@@ -49,6 +49,18 @@ library
     Network.Email.Header.Render
     Network.Email.Header.Types
 
+executable test-parser
+  buildable:           False
+  main-is:             TestParser.hs
+  hs-source-dirs:      tests
+  default-extensions:  OverloadedStrings
+  build-depends:       base >=4.8 && <4.9
+                     , email-header
+                     , attoparsec
+                     , text
+                     , bytestring
+  default-language:    Haskell2010
+
 test-suite tests
   type: exitcode-stdio-1.0
   main-is: Tests.hs

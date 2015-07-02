@@ -412,15 +412,16 @@ headerName = CI.mk <$> encodeUtf8 <$> A.takeWhile1 (isPrintable ":")
 header :: Parser Header
 header = (,) <$> headerName <* A.char ':' <*> (TB.toLazyText <$> body)
   where body = do
-          str <- TB.fromText <$> A.takeWhile (/= '\r')
+          str <- TB.fromText <$> A.takeTill (== '\r')
           next <- end
                   <|> (<>) <$> (TB.singleton <$> A.anyChar) <*> body
           return $ str <> next
         end = do
           _ <- A.string "\r\n"
-          c <- A.peekChar'
-          unless (c /= ' ') $ fail "Folding whitespace"
-          return mempty
+          c <- A.peekChar
+          case c of
+            Just ' ' -> fail "Folding whitespace"
+            _ -> return mempty
 
 -- | Split multiple headers.
 headers :: Parser Headers
